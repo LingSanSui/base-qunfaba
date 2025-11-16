@@ -33,6 +33,8 @@ textarea{width:100%;height:200px}
     <span id="supportInfo"></span>
     <button id="deployBtn" style="display:none">部署群发合约</button>
     <span id="deployInfo"></span>
+    <span style="margin-left:12px">原生余额:</span>
+    <span id="nativeBalance"></span>
   </div>
 </div>
 
@@ -42,6 +44,7 @@ textarea{width:100%;height:200px}
     <label><input type="radio" name="mode" value="ERC20"> ERC20</label>
     <input id="tokenAddress" placeholder="ERC20 合约地址" style="width:360px">
     <span id="tokenMeta"></span>
+    <span id="tokenBalance" style="margin-left:12px"></span>
   </div>
   <div class="row">
     <span>每行: 地址 与 数量，分隔支持 , 或 ---- 或 空格</span>
@@ -106,6 +109,7 @@ const defaultAbi = JSON.stringify([
   {"type":"event","name":"DisperseEther","inputs":[{"name":"sender","type":"address","indexed":true},{"name":"count","type":"uint256","indexed":false},{"name":"total","type":"uint256","indexed":false}]},
   {"type":"event","name":"DisperseToken","inputs":[{"name":"sender","type":"address","indexed":true},{"name":"token","type":"address","indexed":true},{"name":"count","type":"uint256","indexed":false},{"name":"total","type":"uint256","indexed":false}]}
 ])
+const nativeSymbols = { 1:'ETH',5:'ETH',56:'BNB',66:'OKT',137:'MATIC',10:'ETH',42161:'ETH',43114:'AVAX',59144:'ETH',8453:'ETH' }
 const disperseAbi = [
   {"type":"function","name":"disperseEther","stateMutability":"payable","inputs":[{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]},
   {"type":"function","name":"disperseTokenSimple","stateMutability":"nonpayable","inputs":[{"name":"token","type":"address"},{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]}
@@ -118,6 +122,7 @@ const erc20Abi = [
 ]
 
 let provider
+let browserProvider
 let signer
 let account
 let chainId
@@ -160,8 +165,8 @@ function getSelectedProvider(){
 async function connect(){
   provider = getSelectedProvider()
   if(!provider) return
-  const ethp = new ethers.BrowserProvider(provider)
-  signer = await ethp.getSigner()
+  browserProvider = new ethers.BrowserProvider(provider)
+  signer = await browserProvider.getSigner()
   account = await signer.getAddress()
   const cidHex = await provider.request({method:'eth_chainId'})
   chainId = Number(cidHex)
@@ -169,17 +174,18 @@ async function connect(){
   const name = chainNames[chainId] || '未知链'
   document.getElementById('chainInfo').textContent = `${chainId} (${name})`
   refreshSupportUI()
+  await updateNativeBalance()
 }
 
 async function ensureTokenMeta(){
   const mode = document.querySelector('input[name="mode"]:checked').value
-  if(mode!=='ERC20') { tokenDecimals=18; tokenSymbol='ETH'; document.getElementById('tokenMeta').textContent = ''; return }
+  if(mode!=='ERC20') { tokenDecimals=18; tokenSymbol='ETH'; document.getElementById('tokenMeta').textContent = ''; document.getElementById('tokenBalance').textContent=''; return }
   const addr = document.getElementById('tokenAddress').value.trim()
-  if(!ethers.isAddress(addr)) { document.getElementById('tokenMeta').textContent = '无效地址'; return }
-  const ethp = new ethers.BrowserProvider(getSelectedProvider())
-  const c = new ethers.Contract(addr, erc20Abi, await ethp.getSigner())
+  if(!ethers.isAddress(addr)) { document.getElementById('tokenMeta').textContent = '无效地址'; document.getElementById('tokenBalance').textContent=''; return }
+  const c = new ethers.Contract(addr, erc20Abi, signer)
   try { tokenDecimals = Number(await c.decimals()); tokenSymbol = await c.symbol() } catch(e) { tokenDecimals=18; tokenSymbol='' }
   document.getElementById('tokenMeta').textContent = tokenSymbol? (tokenSymbol+' / '+tokenDecimals) : String(tokenDecimals)
+  await updateTokenBalance(addr)
 }
 
 function parseValue(str, dec){
@@ -206,6 +212,31 @@ function parseLines(){
   }
   document.getElementById('parseInfo').textContent = '条目: '+parsed.recipients.length+' 总额: '+ethers.formatUnits(parsed.total, mode==='ETH'?18:tokenDecimals)+(mode==='ETH'?' ETH':' '+(tokenSymbol||'ERC20'))
   document.getElementById('sendBtn').disabled = !(parsed.recipients.length>0)
+}
+
+async function updateNativeBalance(){
+  if(!browserProvider || !account) return
+  try{
+    const bal = await browserProvider.getBalance(account)
+    const sym = nativeSymbols[chainId] || 'ETH'
+    document.getElementById('nativeBalance').textContent = `${ethers.formatUnits(bal, 18)} ${sym}`
+  }catch(e){
+    document.getElementById('nativeBalance').textContent = ''
+  }
+}
+
+async function updateTokenBalance(addr){
+  if(!signer || !account || !ethers.isAddress(addr)) { document.getElementById('tokenBalance').textContent = '' ; return }
+  try{
+    const viewAbi = [
+      {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"owner","type":"address"}],"outputs":[{"type":"uint256"}]}
+    ]
+    const c = new ethers.Contract(addr, viewAbi, browserProvider)
+    const bal = await c.balanceOf(account)
+    document.getElementById('tokenBalance').textContent = `${ethers.formatUnits(bal, tokenDecimals)} ${tokenSymbol||''}`
+  }catch(e){
+    document.getElementById('tokenBalance').textContent = ''
+  }
 }
 
 function refreshSupportUI(){

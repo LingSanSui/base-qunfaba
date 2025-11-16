@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>群发吧</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+ 
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:24px;color:#111}
+.row{display:flex;gap:12px;align-items:center;margin:8px 0}
+input,select,textarea,button{font-size:14px;padding:8px;border:1px solid #ddd;border-radius:8px}
+button{background:#111;color:#fff;border:none;cursor:pointer}
+button:disabled{background:#aaa;cursor:not-allowed}
+textarea{width:100%;height:200px}
+.card{border:1px solid #eee;border-radius:12px;padding:16px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ok{color:#2e7d32}
+.bad{color:#c62828}
+</style>
+</head>
+<body>
+<h2>代币群发吧</h2>
+<div class="card">
+  <div class="row">
+    <select id="providerSelect"></select>
+    <button id="connectBtn">连接钱包</button>
+    <span id="account"></span>
+  </div>
+  <div class="row">
+    <span>当前链:</span>
+    <span id="chainInfo"></span>
+    <span id="supportInfo"></span>
+    <button id="deployBtn" style="display:none">部署群发合约</button>
+    <span id="deployInfo"></span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <label><input type="radio" name="mode" value="ETH" checked> ETH</label>
+    <label><input type="radio" name="mode" value="ERC20"> ERC20</label>
+    <input id="tokenAddress" placeholder="ERC20 合约地址" style="width:360px">
+    <span id="tokenMeta"></span>
+  </div>
+  <div class="row">
+    <span>每行: 地址 与 数量，分隔支持 , 或 ---- 或 空格</span>
+  </div>
+<textarea id="lines" placeholder="0x... , 1.23
+0x... ---- 0.5
+0x...    100"></textarea>
+  <div class="grid">
+    <div>
+      <button id="parseBtn">解析</button>
+      <div id="parseInfo"></div>
+    </div>
+    <div>
+      <button id="sendBtn" disabled>发送</button>
+      <div id="txInfo"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card" id="deployPanel" style="display:none">
+  <div class="row">
+    <span>管理员快速部署（需 ABI 与 Bytecode）：</span>
+    <a href="https://remix.ethereum.org/?#code=%2F%2F%20Paste%20Disperse.sol%20here" target="_blank">打开 Remix</a>
+  </div>
+  <div class="row">
+    <textarea id="abiInput" placeholder="ABI JSON"></textarea>
+  </div>
+  <div class="row">
+    <textarea id="bytecodeInput" placeholder="0x 开头的字节码"></textarea>
+  </div>
+  <div class="row">
+    <button id="deployWithArtifactBtn">使用 ABI/Bytecode 部署</button>
+  </div>
+</div>
+
+<script type="module">
+import { ethers } from 'https://cdn.jsdelivr.net/npm/ethers@6.13.1/dist/ethers.min.js'
+const cfg = {
+  contracts: {
+    1: '',
+    56: '',
+    66: '',
+    8453: '0x92edBa94BF4092341Bf2543E6BafA6bb58831233',
+  }
+}
+const chainNames = {
+  1: 'Ethereum',
+  5: 'Goerli',
+  56: 'BNB Smart Chain',
+  66: 'OKTC',
+  137: 'Polygon',
+  10: 'Optimism',
+  42161: 'Arbitrum One',
+  43114: 'Avalanche',
+  59144: 'Linea',
+  8453: 'Base'
+}
+const adminAddr = '0x927C4306a908362694eEce7E4f45C1624DD51721'.toLowerCase()
+const defaultAbi = JSON.stringify([
+  {"type":"function","name":"disperseEther","stateMutability":"payable","inputs":[{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]},
+  {"type":"function","name":"disperseTokenSimple","stateMutability":"nonpayable","inputs":[{"name":"token","type":"address"},{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]},
+  {"type":"event","name":"DisperseEther","inputs":[{"name":"sender","type":"address","indexed":true},{"name":"count","type":"uint256","indexed":false},{"name":"total","type":"uint256","indexed":false}]},
+  {"type":"event","name":"DisperseToken","inputs":[{"name":"sender","type":"address","indexed":true},{"name":"token","type":"address","indexed":true},{"name":"count","type":"uint256","indexed":false},{"name":"total","type":"uint256","indexed":false}]}
+])
+const disperseAbi = [
+  {"type":"function","name":"disperseEther","stateMutability":"payable","inputs":[{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]},
+  {"type":"function","name":"disperseTokenSimple","stateMutability":"nonpayable","inputs":[{"name":"token","type":"address"},{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]}
+]
+const erc20Abi = [
+  {"type":"function","name":"decimals","stateMutability":"view","inputs":[],"outputs":[{"type":"uint8"}]},
+  {"type":"function","name":"symbol","stateMutability":"view","inputs":[],"outputs":[{"type":"string"}]},
+  {"type":"function","name":"allowance","stateMutability":"view","inputs":[{"name":"owner","type":"address"},{"name":"spender","type":"address"}],"outputs":[{"type":"uint256"}]},
+  {"type":"function","name":"approve","stateMutability":"nonpayable","inputs":[{"name":"spender","type":"address"},{"name":"value","type":"uint256"}],"outputs":[{"type":"bool"}]}
+]
+
+let provider
+let signer
+let account
+let chainId
+let tokenDecimals = 18
+let tokenSymbol = ''
+let parsed = {recipients:[], values:[], total:0n}
+let providersList = []
+
+function pickProviders(){
+  const list = []
+  const eth = window.ethereum
+  const candidates = Array.isArray(eth?.providers) ? eth.providers : (eth ? [eth] : [])
+  for(const p of candidates){
+    const name = p.isMetaMask ? 'MetaMask' : (p.isOkxWallet ? 'OKX' : (p.isBinance ? 'Binance' : 'Wallet'))
+    list.push({name, provider:p})
+  }
+  const sel = document.getElementById('providerSelect')
+  sel.innerHTML = ''
+  for(let i=0;i<list.length;i++){
+    const opt = document.createElement('option')
+    opt.value = String(i)
+    opt.textContent = list[i].name
+    sel.appendChild(opt)
+  }
+  if(list.length===0){
+    const opt = document.createElement('option')
+    opt.value = '0'
+    opt.textContent = '未检测到钱包'
+    sel.appendChild(opt)
+  }
+  providersList = list.map(x=>x.provider)
+}
+
+function getSelectedProvider(){
+  const sel = document.getElementById('providerSelect')
+  const idx = Number(sel.value||0)
+  return providersList[idx] || window.ethereum || null
+}
+
+async function connect(){
+  provider = getSelectedProvider()
+  if(!provider) return
+  const ethp = new ethers.BrowserProvider(provider)
+  signer = await ethp.getSigner()
+  account = await signer.getAddress()
+  const cidHex = await provider.request({method:'eth_chainId'})
+  chainId = Number(cidHex)
+  document.getElementById('account').textContent = account
+  const name = chainNames[chainId] || '未知链'
+  document.getElementById('chainInfo').textContent = `${chainId} (${name})`
+  refreshSupportUI()
+}
+
+async function ensureTokenMeta(){
+  const mode = document.querySelector('input[name="mode"]:checked').value
+  if(mode!=='ERC20') { tokenDecimals=18; tokenSymbol='ETH'; document.getElementById('tokenMeta').textContent = ''; return }
+  const addr = document.getElementById('tokenAddress').value.trim()
+  if(!ethers.isAddress(addr)) { document.getElementById('tokenMeta').textContent = '无效地址'; return }
+  const ethp = new ethers.BrowserProvider(getSelectedProvider())
+  const c = new ethers.Contract(addr, erc20Abi, await ethp.getSigner())
+  try { tokenDecimals = Number(await c.decimals()); tokenSymbol = await c.symbol() } catch(e) { tokenDecimals=18; tokenSymbol='' }
+  document.getElementById('tokenMeta').textContent = tokenSymbol? (tokenSymbol+' / '+tokenDecimals) : String(tokenDecimals)
+}
+
+function parseValue(str, dec){
+  return ethers.parseUnits(str, dec)
+}
+
+function parseLines(){
+  parsed = {recipients:[], values:[], total:0n}
+  const raw = document.getElementById('lines').value.split(/\n+/)
+  const mode = document.querySelector('input[name="mode"]:checked').value
+  for(const line of raw){
+    if(!line.trim()) continue
+    const parts = line.trim().split(/,|----|\s+/).filter(Boolean)
+    if(parts.length<2) continue
+    const addr = parts[0]
+    const amtStr = parts[1]
+    if(!ethers.isAddress(addr)) continue
+    try{
+      const val = parseValue(amtStr, mode==='ETH'? 18 : tokenDecimals)
+      parsed.recipients.push(addr)
+      parsed.values.push(val)
+      parsed.total += val
+    }catch(e){}
+  }
+  document.getElementById('parseInfo').textContent = '条目: '+parsed.recipients.length+' 总额: '+ethers.formatUnits(parsed.total, mode==='ETH'?18:tokenDecimals)+(mode==='ETH'?' ETH':' '+(tokenSymbol||'ERC20'))
+  document.getElementById('sendBtn').disabled = !(parsed.recipients.length>0)
+}
+
+function refreshSupportUI(){
+  const addr = cfg.contracts[chainId]
+  const supported = !!addr
+  const s = document.getElementById('supportInfo')
+  s.textContent = supported? '已支持' : '未支持'
+  s.className = supported? 'ok' : 'bad'
+  const canDeploy = !supported && account && account.toLowerCase() === adminAddr
+  const btn = document.getElementById('deployBtn')
+  btn.style.display = canDeploy? '' : 'none'
+  document.getElementById('deployPanel').style.display = canDeploy? '' : 'none'
+  if(canDeploy){
+    const abiEl = document.getElementById('abiInput')
+    if(abiEl && !abiEl.value.trim()) abiEl.value = defaultAbi
+  }
+}
+
+async function deployDisperse(){
+  try{
+    const abiText = document.getElementById('abiInput').value.trim()
+    const bytecode = document.getElementById('bytecodeInput').value.trim()
+    if(!abiText || !bytecode || !bytecode.startsWith('0x')){
+      document.getElementById('deployInfo').textContent = '请填写 ABI 与 0x 开头的 Bytecode'
+      return
+    }
+    const abi = JSON.parse(abiText)
+    const factory = new ethers.ContractFactory(abi, bytecode, signer)
+    const contract = await factory.deploy()
+    const tx = contract.deploymentTransaction()
+    document.getElementById('deployInfo').textContent = '部署中: '+(tx?.hash||'')
+    await contract.waitForDeployment()
+    const addr = await contract.getAddress()
+    cfg.contracts[chainId] = addr
+    document.getElementById('deployInfo').textContent = `部署成功: 链ID ${chainId} 合约 ${addr}`
+    refreshSupportUI()
+  }catch(e){
+    document.getElementById('deployInfo').textContent = '部署失败: '+(e?.message||String(e))
+  }
+}
+
+async function send(){
+  if(!signer) return
+  const addr = cfg.contracts[chainId]
+  if(!addr){ document.getElementById('txInfo').textContent = '当前链未支持'; return }
+  const c = new ethers.Contract(addr, disperseAbi, signer)
+  const mode = document.querySelector('input[name="mode"]:checked').value
+  if(mode==='ETH'){
+    try{
+      const tx = await c.disperseEther(parsed.recipients, parsed.values, { value: parsed.total })
+      document.getElementById('txInfo').textContent = '发送中: '+tx.hash
+      const receipt = await tx.wait()
+      document.getElementById('txInfo').textContent = '完成: '+receipt.transactionHash
+    }catch(e){ document.getElementById('txInfo').textContent = '失败: '+(e?.message||String(e)) }
+  } else {
+    const tokenAddr = document.getElementById('tokenAddress').value.trim()
+    if(!ethers.isAddress(tokenAddr)) { document.getElementById('txInfo').textContent = '无效ERC20地址'; return }
+    const token = new ethers.Contract(tokenAddr, erc20Abi, signer)
+    try{
+      const allowance = await token.allowance(account, addr)
+      if(allowance < parsed.total){
+        const txA = await token.approve(addr, parsed.total)
+        document.getElementById('txInfo').textContent = '授权中: '+txA.hash
+        await txA.wait()
+      }
+      const tx = await c.disperseTokenSimple(tokenAddr, parsed.recipients, parsed.values)
+      document.getElementById('txInfo').textContent = '发送中: '+tx.hash
+      const receipt = await tx.wait()
+      document.getElementById('txInfo').textContent = '完成: '+receipt.transactionHash
+    }catch(e){ document.getElementById('txInfo').textContent = '失败: '+(e?.message||String(e)) }
+  }
+}
+
+document.getElementById('connectBtn').addEventListener('click', connect)
+document.getElementById('providerSelect').addEventListener('change', ()=>{ provider = getSelectedProvider() })
+document.getElementById('parseBtn').addEventListener('click', ()=>{ parseLines() })
+document.getElementById('sendBtn').addEventListener('click', send)
+document.getElementById('tokenAddress').addEventListener('change', ensureTokenMeta)
+document.querySelectorAll('input[name="mode"]').forEach(x=>x.addEventListener('change', ()=>{ ensureTokenMeta(); parseLines() }))
+document.getElementById('deployBtn').addEventListener('click', deployDisperse)
+document.getElementById('deployWithArtifactBtn').addEventListener('click', deployDisperse)
+
+pickProviders()
+</script>
+</body>
+</html>

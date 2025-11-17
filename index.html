@@ -102,6 +102,7 @@ const chainNames = {
   59144: 'Linea',
   8453: 'Base'
 }
+const chainBatchLimits = { 1: 1000, 5: 500, 56: 800, 66: 500, 137: 600, 10: 300, 42161: 400, 43114: 400, 59144: 300, 8453: 200 }
 const adminAddr = '0x927C4306a908362694eEce7E4f45C1624DD51721'.toLowerCase()
 const defaultAbi = JSON.stringify([
   {"type":"function","name":"disperseEther","stateMutability":"payable","inputs":[{"name":"recipients","type":"address[]"},{"name":"values","type":"uint256[]"}],"outputs":[]},
@@ -214,6 +215,17 @@ function parseLines(){
   document.getElementById('sendBtn').disabled = !(parsed.recipients.length>0)
 }
 
+function chunk(arr, size){
+  const out=[]
+  for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i, i+size))
+  return out
+}
+function sumValues(vals){
+  let s=0n
+  for(const v of vals) s += v
+  return s
+}
+
 async function updateNativeBalance(){
   if(!browserProvider || !account) return
   try{
@@ -284,12 +296,20 @@ async function send(){
   if(!addr){ document.getElementById('txInfo').textContent = '当前链未支持'; return }
   const c = new ethers.Contract(addr, disperseAbi, signer)
   const mode = document.querySelector('input[name="mode"]:checked').value
+  const limit = chainBatchLimits[chainId] || 200
+  const rChunks = chunk(parsed.recipients, limit)
+  const vChunks = chunk(parsed.values, limit)
   if(mode==='ETH'){
     try{
-      const tx = await c.disperseEther(parsed.recipients, parsed.values, { value: parsed.total })
-      document.getElementById('txInfo').textContent = '发送中: '+tx.hash
-      const receipt = await tx.wait()
-      document.getElementById('txInfo').textContent = '完成: '+receipt.transactionHash
+      let lastHash=''
+      for(let i=0;i<rChunks.length;i++){
+        const valSum = sumValues(vChunks[i])
+        const tx = await c.disperseEther(rChunks[i], vChunks[i], { value: valSum })
+        document.getElementById('txInfo').textContent = `发送中(${i+1}/${rChunks.length}): ${tx.hash}`
+        const receipt = await tx.wait()
+        lastHash = receipt.transactionHash
+      }
+      document.getElementById('txInfo').textContent = '完成: '+lastHash
     }catch(e){ document.getElementById('txInfo').textContent = '失败: '+(e?.message||String(e)) }
   } else {
     const tokenAddr = document.getElementById('tokenAddress').value.trim()
@@ -302,10 +322,14 @@ async function send(){
         document.getElementById('txInfo').textContent = '授权中: '+txA.hash
         await txA.wait()
       }
-      const tx = await c.disperseTokenSimple(tokenAddr, parsed.recipients, parsed.values)
-      document.getElementById('txInfo').textContent = '发送中: '+tx.hash
-      const receipt = await tx.wait()
-      document.getElementById('txInfo').textContent = '完成: '+receipt.transactionHash
+      let lastHash=''
+      for(let i=0;i<rChunks.length;i++){
+        const tx = await c.disperseTokenSimple(tokenAddr, rChunks[i], vChunks[i])
+        document.getElementById('txInfo').textContent = `发送中(${i+1}/${rChunks.length}): ${tx.hash}`
+        const receipt = await tx.wait()
+        lastHash = receipt.transactionHash
+      }
+      document.getElementById('txInfo').textContent = '完成: '+lastHash
     }catch(e){ document.getElementById('txInfo').textContent = '失败: '+(e?.message||String(e)) }
   }
 }

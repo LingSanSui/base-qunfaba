@@ -66,7 +66,7 @@ textarea{width:100%;height:200px}
 
 <div class="card" id="deployPanel" style="display:none">
   <div class="row">
-    <span>管理员快速部署（需 ABI 与 Bytecode）：</span>
+    <span>部署 Disperse 合约（已自动加载本地 0.8.19 兼容版本）：</span>
     <a href="https://remix.ethereum.org/?#code=%2F%2F%20Paste%20Disperse.sol%20here" target="_blank">打开 Remix</a>
   </div>
   <div class="row">
@@ -80,12 +80,14 @@ textarea{width:100%;height:200px}
   </div>
 </div>
 
+ 
+
 <script type="module">
 import { ethers } from 'https://cdn.jsdelivr.net/npm/ethers@6.13.1/dist/ethers.min.js'
 const cfg = {
   contracts: {
     1: '',
-    56: '',
+    56: '0x305744207AE438eB05c795c85179c4EF436d5922',
     66: '',
     8453: '0x92edBa94BF4092341Bf2543E6BafA6bb58831233',
   }
@@ -132,6 +134,7 @@ let tokenDecimals = 18
 let tokenSymbol = ''
 let parsed = {recipients:[], values:[], total:0n}
 let providersList = []
+ 
 
 function pickProviders(){
   const list = []
@@ -238,6 +241,7 @@ async function updateNativeBalance(){
   }
 }
 
+
 async function updateTokenBalance(addr){
   if(!signer || !account || !ethers.isAddress(addr)) { document.getElementById('tokenBalance').textContent = '' ; return }
   try{
@@ -258,15 +262,39 @@ function refreshSupportUI(){
   const s = document.getElementById('supportInfo')
   s.textContent = supported? '已支持' : '未支持'
   s.className = supported? 'ok' : 'bad'
-  const canDeploy = !supported && account && account.toLowerCase() === adminAddr
+  // 只要未支持且已连接钱包，就允许部署
+  const canDeploy = !supported && account
   const btn = document.getElementById('deployBtn')
   btn.style.display = canDeploy? '' : 'none'
   document.getElementById('deployPanel').style.display = canDeploy? '' : 'none'
   if(canDeploy){
+    loadLocalArtifacts()
+  }
+}
+
+async function loadLocalArtifacts(){
+  try{
+    const abiResp = await fetch('./Disperse.abi')
+    const byteResp = await fetch('./Disperse.bytecode')
     const abiEl = document.getElementById('abiInput')
-    if(abiEl && !abiEl.value.trim()) abiEl.value = defaultAbi
     const bcEl = document.getElementById('bytecodeInput')
-    if(bcEl && !bcEl.value.trim()) bcEl.value = defaultBytecode
+    
+    if(abiResp.ok && abiEl && !abiEl.value.trim()){
+      const txt = await abiResp.text()
+      abiEl.value = txt
+    } else if (abiEl && !abiEl.value.trim()) {
+      abiEl.value = defaultAbi
+    }
+    
+    if(byteResp.ok && bcEl && !bcEl.value.trim()){
+      let txt = await byteResp.text()
+      if(!txt.startsWith('0x')) txt = '0x' + txt
+      bcEl.value = txt
+    } else if (bcEl && !bcEl.value.trim()) {
+      bcEl.value = defaultBytecode
+    }
+  }catch(e){
+    console.error(e)
   }
 }
 
@@ -347,6 +375,7 @@ document.getElementById('tokenAddress').addEventListener('change', ensureTokenMe
 document.querySelectorAll('input[name="mode"]').forEach(x=>x.addEventListener('change', ()=>{ ensureTokenMeta(); parseLines() }))
 document.getElementById('deployBtn').addEventListener('click', deployDisperse)
 document.getElementById('deployWithArtifactBtn').addEventListener('click', deployDisperse)
+ 
 
 pickProviders()
 </script>
